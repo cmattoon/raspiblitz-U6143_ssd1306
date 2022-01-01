@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/sysinfo.h>
 #include <sys/vfs.h>
@@ -17,7 +18,7 @@
 #include <linux/i2c-dev.h>
 #include <fcntl.h>
 
-
+char LNDPubKey[8]={0};
 char IPSource[20]={0};
 int i2cd;
 
@@ -62,6 +63,38 @@ void ssd1306_begin(unsigned int vccstate, unsigned int i2caddr)
 	OLED_WR_Byte(0x8d,OLED_CMD);
 	OLED_WR_Byte(0x14,OLED_CMD);
 	OLED_WR_Byte(0xaf,OLED_CMD); 
+}
+
+
+/**
+ * The main function of interest in this file.
+ * This function is called by main, which tells it which screen to display.
+ */
+bool LCD_Display(unsigned char symbol)
+{
+  switch(symbol)
+  {
+  case 0:
+    LCD_DisplayTemperature();
+    return True;
+  
+  case 1:
+    LCD_DisPlayCpuMemory();
+    return True;
+    
+  case 2:
+    LCD_DisplaySdMemory();
+    return True;
+    
+  case 3:
+    return LCD_DisplayIPFS();
+    
+  case 4:
+    return LCD_DisplayLND();
+    
+  default:
+    return False;
+  }
 }
 
 
@@ -230,27 +263,29 @@ void OLED_ClearLint(unsigned char x1,unsigned char x2)
 
 void OLED_Clear(void)  
 {  
-	unsigned char i,n;		    
-	for(i=0;i<4;i++)  
-	{  
-		OLED_WR_Byte (0xb0+i,OLED_CMD);  
-		OLED_WR_Byte (0x00,OLED_CMD);      
-		OLED_WR_Byte (0x10,OLED_CMD);     
-		for(n=0;n<128;n++)OLED_WR_Byte(0,OLED_DATA); 
-	} 
+  unsigned char i,n;		    
+  for(i=0;i<4;i++)  
+    {  
+      OLED_WR_Byte (0xb0+i,OLED_CMD);  
+      OLED_WR_Byte (0x00,OLED_CMD);      
+      OLED_WR_Byte (0x10,OLED_CMD);     
+      for(n=0;n<128;n++) {
+	OLED_WR_Byte(0,OLED_DATA);
+      }
+    } 
 }
 
-void LCD_DisplayIPFS(void)
+bool LCD_DisplayIPFS(void)
 {
-
   FILE * fp;
-  unsigned char buf[80] = {0};
-  
+  unsigned char buf[80] = {0}; 
   fp = popen("ipfs stats bw | grep TotalOut | awk '{print $2,$3}'", "r");
+  if (fp == NULL) {
+    return False;
+  }
   fgets(buf, sizeof(buf), fp);
   pclose(fp);
 
-  //buf[3] = '\0';
   strcpy(IPSource, GetIpAddress());
   
   OLED_Clear();
@@ -258,8 +293,106 @@ void LCD_DisplayIPFS(void)
   OLED_ShowString(0, 0, IPSource, 8);
   
   OLED_ShowString(87, 3, buf, 8);
+  return True;
+}
 
+bool LCD_DisplayLND(void)
+{
+  strcpy(LNDPubKey, GetLNDPubKey());
+  if (LNDPubKey == '\0') {
+    return False;
+  }
   
+  displayLNDSync();
+  sleep(1);
+  sleep(1);
+  sleep(1);
+
+  displayLNDPeers();
+  sleep(1);
+  sleep(1);
+  sleep(1);
+  
+  displayLNDBlockHeight();
+  // sleep handled by parent func on last iteration
+  return True;
+}
+void displayLNDPeers(void) {
+  FILE * fp;
+  unsigned char buf[80] = {0};
+  unsigned char peerResponse[10] = {0};
+  
+  fp = popen("lncli --lnddir /mnt/hdd/lnd getinfo | jq -r '.num_peers'", "r");
+  if (fp != NULL) {
+    fgets(peerResponse, sizeof(peerResponse), fp);
+    pclose(fp);
+  }
+  peerResponse[strcspn(peerResponse, "\n")] = 0;
+  sprintf(buf, "LN Peers: %s", peerResponse);
+
+  OLED_Clear();
+  OLED_ShowString(0, 0, LNDPubKey, 8);
+  OLED_ShowString(0, 3, buf, 8);
+  return True;
+}
+
+void displayLNDSync(void) {
+  FILE * fp;
+  unsigned char res[80] = {0};
+  
+  unsigned int synced2chain = 0;
+  unsigned int synced2graph = 0;
+  
+  fp = popen("lncli --lnddir /mnt/hdd/lnd getinfo | jq -r '.synced_to_chain'", "r");
+  if (fp != NULL) {
+    fgets(res, sizeof(res), fp);
+    pclose(fp);
+    
+    if (strcmp("true", res)) {
+      synced2chain = 1;
+    }
+  }
+  
+  fp = popen("lncli --lnddir /mnt/hdd/lnd getinfo | jq -r '.synced_to_graph'", "r");
+  if (fp != NULL) { 
+    fgets(res, sizeof(res), fp);
+    pclose(fp);
+    if (strcmp("true", res)) {
+      synced2graph = 1;
+    }
+  }
+  unsigned char buf1[80] = {0};
+  unsigned char buf2[80] = {0};
+  sprintf(buf1, "Chain Synced: %d", synced2chain);
+  sprintf(buf2, "Graph Synced: %d", synced2graph);
+  
+  OLED_Clear();
+  OLED_ShowString(0, 0, LNDPubKey, 8);
+  OLED_ShowString(0, 2, buf1, 8);
+  OLED_ShowString(0, 3, buf2, 8);
+  return True;
+}
+
+void displayLNDBlockHeight(void){
+  FILE * fp;
+  unsigned char buf[8] = {0};
+  
+  fp = popen("lncli --lnddir /mnt/hdd/lnd getinfo | jq -r '.block_height'", "r");
+  if (fp == NULL) {
+    return False;
+  }
+  
+  fgets(buf, sizeof(buf), fp);
+  pclose(fp);
+  buf[strcspn(buf, "\n")] = 0;
+  
+  unsigned char x[20] = {0};
+  sprintf(x, "BlkHt %s", buf);
+  
+  OLED_Clear();
+  OLED_ShowString(0, 0, LNDPubKey, 8);
+  OLED_ShowString(0, 3, x, 8);
+  return True;
 }
 
 /*
@@ -394,8 +527,8 @@ void LCD_DisplaySdMemory(void)
     OLED_ShowString(90,3,totalsize_GB,8); 
   }
 
-
-	unsigned long long freesize = blocksize*diskInfo.f_bfree; //Now let's figure out how much space we have left
+  
+  unsigned long long freesize = blocksize*diskInfo.f_bfree; //Now let's figure out how much space we have left
   size=freesize>>30;
   size=MemSize-size;
   snprintf(usedsize_GB,7,"%d",size);
@@ -413,34 +546,35 @@ void LCD_DisplaySdMemory(void)
   }
 }
 
-/*
-*According to the information
-*/
-void LCD_Display(unsigned char symbol)
-{
-  switch(symbol)
-  {
-    case 0:
-      LCD_DisplayTemperature();
-    break;
-    case 1:
-      LCD_DisPlayCpuMemory();
-    break;
-    case 2:
-      LCD_DisplaySdMemory();
-    break;
-  case 3:
-    LCD_DisplayIPFS();
-    break;
-    default:
-    break;
-  }
-}
-
-
 void FirstGetIpAddress(void)
 {
   strcpy(IPSource,GetIpAddress());     
+}
+
+void FirstGetLNDPubKey(void) {
+  strcpy(LNDPubKey, GetLNDPubKey());
+}
+
+char* GetLNDPubKey(void)
+{
+  FILE * fp;
+  //unsigned char buf[20] = {0};
+  char *retbuf = malloc(18);
+
+  unsigned char buf[18] = {0};
+  fp = popen("lncli --lnddir /mnt/hdd/lnd getinfo | jq -r '.identity_pubkey'", "r");
+  if (fp == NULL) {
+    char* b="";
+    return b;
+  }
+  fgets(buf, 8, fp);
+  pclose(fp);
+  retbuf = buf;
+  
+  unsigned char res[18] = {0};
+  sprintf(res, "LNDKey %s", buf);
+  retbuf = res;
+  return retbuf;
 }
 
 char* GetIpAddress(void)
